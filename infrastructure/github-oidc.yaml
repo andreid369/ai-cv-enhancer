@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  One-time setup - lets GitHub Actions in ONE repository deploy the cv-enhancer stack
+  using short-lived credentials (OpenID Connect). No AWS access keys are stored in GitHub.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Description: GitHub user or organisation that owns the repository (e.g. andrei-donz)
+  GitHubRepo:
+    Type: String
+    Description: Repository name (e.g. ai-cv-enhancer)
+  AppStackName:
+    Type: String
+    Default: cv-enhancer
+    AllowedPattern: '^[a-z][a-z0-9-]{1,30}$'
+    Description: Name of the application stack the workflow deploys (lowercase - it prefixes S3 bucket names)
+  CreateOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Set to false if this AWS account already has the token.actions.githubusercontent.com identity provider.
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'github-deploy-${AppStackName}'   # deliberately NOT prefixed with the app stack name
+      Description: Assumed by GitHub Actions to deploy the CV enhancer
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOidcProvider
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # only the main branch / the "production" environment of this one repo
+                token.actions.githubusercontent.com:sub:
+                  - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:production'
+                  - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/main'
+      Policies:
+        - PolicyName: deploy-cv-enhancer
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: CloudFormationStack
+                Effect: Allow
+                Action: 'cloudformation:*'
+                Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppStackName}/*'
+              - Sid: CloudFormationRead
+                Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:DescribeStacks
+                  - cloudformation:ListStacks
+                Resource: '*'
+              - Sid: Buckets
+                Effect: Allow
+                Action: 's3:*'
+                Resource: !Sub 'arn:aws:s3:::${AppStackName}-*'
+              - Sid: StackRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:PassRole
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${AppStackName}-*'
+              - Sid: AttachOnlyLambdaBasicPolicy
+                Effect: Allow
+                Action:
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${AppStackName}-*'
+                Condition:
+                  ArnEquals:
+                    iam:PolicyARN: arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+              - Sid: LambdaFunctions
+                Effect: Allow
+                Action: 'lambda:*'
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AppStackName}-*'
+              - Sid: LambdaEventSourceMappings
+                Effect: Allow
+                Action:
+                  - lambda:CreateEventSourceMapping
+                  - lambda:UpdateEventSourceMapping
+                  - lambda:DeleteEventSourceMapping
+                  - lambda:GetEventSourceMapping
+                  - lambda:ListEventSourceMappings
+                  - lambda:TagResource
+                Resource: '*'
+              - Sid: ApiGateway
+                Effect: Allow
+                Action: 'apigateway:*'
+                Resource: !Sub 'arn:aws:apigateway:${AWS::Region}::/*'
+              - Sid: Queues
+                Effect: Allow
+                Action: 'sqs:*'
+                Resource: !Sub 'arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${AppStackName}-*'
+              - Sid: Topics
+                Effect: Allow
+                Action: 'sns:*'
+                Resource: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${AppStackName}-*'
+              - Sid: Tables
+                Effect: Allow
+                Action: 'dynamodb:*'
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AppStackName}-*'
+              - Sid: LogGroups
+                Effect: Allow
+                Action: 'logs:*'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AppStackName}-*'
+              - Sid: LogGroupsDescribe
+                Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: '*'
+              - Sid: CloudFront   # distribution IDs are random, so they can't be scoped by name
+                Effect: Allow
+                Action: 'cloudfront:*'
+                Resource: '*'
+
+Outputs:
+  DeployRoleArn:
+    Description: Put this in the GitHub repository variable AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn

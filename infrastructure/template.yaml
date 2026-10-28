@@ -1,0 +1,790 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AI CV Enhancer - event-driven app.
+  Website (S3 + CloudFront) -> API Gateway -> SQS -> Lambda -> Amazon Bedrock -> S3 -> SNS email.
+  Max N CVs per client IP; no CV data is kept after the result is delivered.
+
+Parameters:
+  NotificationEmail:
+    Type: String
+    Description: Email address that receives a notification each time a CV has been processed (you must confirm the SNS subscription).
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    ConstraintDescription: Must be a valid email address.
+
+  BedrockModelId:
+    Type: String
+    Default: eu.anthropic.claude-sonnet-5-5
+    Description: >
+      Bedrock model or inference profile ID. In eu-central-1 Anthropic models are only reachable through
+      the eu.* (data stays in the EU) or global.* inference profiles.
+      Cheaper options - eu.anthropic.claude-haiku-5-5, eu.amazon.nova-2-lite-v1:0
+
+  MaxOutputTokens:
+    Type: Number
+    Default: 8000
+    MinValue: 1000
+    MaxValue: 32000
+    Description: Maximum number of tokens the model may generate for one CV.
+
+  AllowedOrigin:
+    Type: String
+    Default: ''
+    Description: >
+      CORS origin allowed to call the API. Leave empty to allow only the CloudFront website created by this stack.
+      Use * while testing the frontend locally.
+
+  MaxCvsPerIp:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    Description: How many CVs one client IP address may submit. Further uploads get HTTP 403.
+
+  IpLimitResetDays:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: Days after the first upload when an IP's counter resets. 0 = never reset (lifetime limit).
+
+Conditions:
+  UseCloudFrontOrigin: !Equals [!Ref AllowedOrigin, '']
+  IpLimitResets: !Not [!Equals [!Ref IpLimitResetDays, 0]]
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Notifications (Amazon SNS)
+  # ---------------------------------------------------------------------------
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: CV Enhancer
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref NotificationEmail
+
+  NotificationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref NotificationTopic]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowS3ToPublish
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref NotificationTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # ---------------------------------------------------------------------------
+  # Data deletion: SNS also feeds a delayed queue that deletes the result
+  # 15 minutes after the email went out (the website normally deletes it sooner)
+  # ---------------------------------------------------------------------------
+  CleanupQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      DelaySeconds: 900                 # 15 minutes = SQS maximum; gives the website time to fetch the result
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 86400
+      SqsManagedSseEnabled: true
+
+  CleanupQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref CleanupQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowNotificationTopic
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt CleanupQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref NotificationTopic
+
+  CleanupSubscription:
+    Type: AWS::SNS::Subscription
+    DependsOn: CleanupQueuePolicy
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: sqs
+      Endpoint: !GetAtt CleanupQueue.Arn
+      RawMessageDelivery: true          # the queue receives the plain S3 event
+
+  CleanupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: cleanup
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt CleanupQueue.Arn
+              - Effect: Allow
+                Action: s3:DeleteObject
+                Resource: !Sub '${CvBucket.Arn}/results/*'
+
+  CleanupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Deletes CV results from S3 after the email notification has been sent.
+      Runtime: python3.13
+      Handler: app.handler
+      Code: ../backend/cleanup
+      Role: !GetAtt CleanupRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Architectures: [arm64]
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref CvBucket
+
+  CleanupLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${CleanupFunction}'
+      RetentionInDays: 14
+
+  CleanupEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt CleanupQueue.Arn
+      FunctionName: !Ref CleanupFunction
+      BatchSize: 10
+
+  # ---------------------------------------------------------------------------
+  # CV storage (Amazon S3) - S3 sends an event to SNS when a result is saved
+  # ---------------------------------------------------------------------------
+  CvBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: NotificationTopicPolicy
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: SafetyNetDeleteAfterOneDay   # backup only - results are normally deleted within 15 minutes
+            Status: Enabled
+            ExpirationInDays: 1
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !Ref NotificationTopic
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: results/
+                  - Name: suffix
+                    Value: .json
+
+  CvBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CvBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt CvBucket.Arn
+              - !Sub '${CvBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # ---------------------------------------------------------------------------
+  # Queue (Amazon SQS)
+  # ---------------------------------------------------------------------------
+  CvDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 3600      # 1 hour - messages contain CV text, don't keep them
+      SqsManagedSseEnabled: true
+
+  CvQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 1080           # 6 x Lambda timeout (AWS recommendation)
+      MessageRetentionPeriod: 3600      # 1 hour (3 attempts x 18 min visibility fit inside)
+      MaximumMessageSize: 262144        # 256 KiB - extracted CV text is far smaller
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CvDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  # ---------------------------------------------------------------------------
+  # Processor Lambda: SQS -> Bedrock -> S3
+  # ---------------------------------------------------------------------------
+  ProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: processor
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt CvQueue.Arn
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub '${CvBucket.Arn}/results/*'
+              - Sid: InvokeBedrock
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  # Cross-region inference profiles route to foundation models in several regions
+                  - 'arn:aws:bedrock:*::foundation-model/*'
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*'
+                  - 'arn:aws:bedrock:*:*:inference-profile/*'
+
+  ProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Reads a CV from SQS, improves it with Amazon Bedrock and saves the result to S3.
+      Runtime: python3.13
+      Handler: app.handler
+      Code: ../backend/processor        # uploaded by `aws cloudformation package`
+      Role: !GetAtt ProcessorRole.Arn
+      Timeout: 180
+      MemorySize: 512
+      Architectures: [arm64]
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref CvBucket
+          MODEL_ID: !Ref BedrockModelId
+          MAX_TOKENS: !Ref MaxOutputTokens
+          MAX_RECEIVE_COUNT: '3'
+
+  ProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProcessorFunction}'
+      RetentionInDays: 14
+
+  ProcessorEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt CvQueue.Arn
+      FunctionName: !Ref ProcessorFunction
+      BatchSize: 1
+      FunctionResponseTypes: [ReportBatchItemFailures]
+      ScalingConfig:
+        MaximumConcurrency: 2           # protects Bedrock quotas and your bill
+
+  # ---------------------------------------------------------------------------
+  # Status Lambda: GET /cv/{jobId} -> reads the result from S3
+  # ---------------------------------------------------------------------------
+  StatusRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: status
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:DeleteObject             # result is deleted once the browser has it
+                Resource: !Sub '${CvBucket.Arn}/results/*'
+              - Effect: Allow           # lets S3 answer "not found" instead of "access denied"
+                Action: s3:ListBucket
+                Resource: !GetAtt CvBucket.Arn
+
+  StatusFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Returns the processing status and the improved CV for a job.
+      Runtime: python3.13
+      Handler: app.handler
+      Code: ../backend/status
+      Role: !GetAtt StatusRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Architectures: [arm64]
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref CvBucket
+          ALLOWED_ORIGIN: !If [UseCloudFrontOrigin, !Sub 'https://${Distribution.DomainName}', !Ref AllowedOrigin]
+
+  StatusLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${StatusFunction}'
+      RetentionInDays: 14
+
+  StatusInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref StatusFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/GET/cv/*'
+
+  # ---------------------------------------------------------------------------
+  # Per-IP limit: Lambda authorizer + DynamoDB counter in front of POST /cv
+  # ---------------------------------------------------------------------------
+  IpLimitTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: ipHash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ipHash
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  AuthorizerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ip-limit
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt IpLimitTable.Arn
+
+  AuthorizerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Allows at most MaxCvsPerIp CV uploads per client IP.
+      Runtime: python3.13
+      Handler: app.handler
+      Code: ../backend/authorizer
+      Role: !GetAtt AuthorizerRole.Arn
+      Timeout: 5
+      MemorySize: 128
+      Architectures: [arm64]
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref IpLimitTable
+          MAX_PER_IP: !Ref MaxCvsPerIp
+          RESET_DAYS: !If [IpLimitResets, !Ref IpLimitResetDays, '0']
+          HASH_SALT: !Ref AWS::StackId
+
+  AuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AuthorizerFunction}'
+      RetentionInDays: 14
+
+  AuthorizerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AuthorizerFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/authorizers/${IpLimitAuthorizer}'
+
+  IpLimitAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: ip-limit
+      RestApiId: !Ref Api
+      Type: REQUEST
+      AuthorizerUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations'
+      AuthorizerResultTtlInSeconds: 0   # no caching: every upload must be counted
+
+  # ---------------------------------------------------------------------------
+  # API (Amazon API Gateway) - POST /cv goes straight into SQS, no Lambda in between
+  # ---------------------------------------------------------------------------
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      Description: CV upload API
+      EndpointConfiguration:
+        Types: [REGIONAL]
+
+  ApiSqsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: send-to-queue
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt CvQueue.Arn
+
+  CvResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: cv
+
+  CvJobResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !Ref CvResource
+      PathPart: '{jobId}'
+
+  UploadCvModel:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      RestApiId: !Ref Api
+      ContentType: application/json
+      Name: UploadCv
+      Schema:
+        $schema: 'http://json-schema.org/draft-04/schema#'
+        title: UploadCv
+        type: object
+        additionalProperties: false
+        required: [fileName, cvText]
+        properties:
+          fileName:
+            type: string
+            minLength: 1
+            maxLength: 200
+          cvText:
+            type: string
+            minLength: 200
+            maxLength: 60000
+          targetRole:
+            type: string
+            maxLength: 200
+
+  BodyValidator:
+    Type: AWS::ApiGateway::RequestValidator
+    Properties:
+      RestApiId: !Ref Api
+      ValidateRequestBody: true
+      ValidateRequestParameters: false
+
+  UploadCvMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref CvResource
+      HttpMethod: POST
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref IpLimitAuthorizer
+      RequestValidatorId: !Ref BodyValidator
+      RequestModels:
+        application/json: !Ref UploadCvModel
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Credentials: !GetAtt ApiSqsRole.Arn
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:sqs:path/${AWS::AccountId}/${CvQueue.QueueName}'
+        PassthroughBehavior: NEVER
+        RequestParameters:
+          integration.request.header.Content-Type: "'application/x-www-form-urlencoded'"
+        # The API Gateway request ID becomes the job ID the browser polls with.
+        RequestTemplates:
+          application/json: >-
+            Action=SendMessage&MessageBody=$util.urlEncode($input.body)&MessageAttribute.1.Name=jobId&MessageAttribute.1.Value.DataType=String&MessageAttribute.1.Value.StringValue=$context.requestId
+        IntegrationResponses:
+          - StatusCode: '202'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: !If
+                - UseCloudFrontOrigin
+                - !Sub "'https://${Distribution.DomainName}'"
+                - !Sub "'${AllowedOrigin}'"
+            ResponseTemplates:
+              application/json: '{"jobId": "$context.requestId", "status": "queued"}'
+          - StatusCode: '500'
+            SelectionPattern: '4\d{2}|5\d{2}'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: !If
+                - UseCloudFrontOrigin
+                - !Sub "'https://${Distribution.DomainName}'"
+                - !Sub "'${AllowedOrigin}'"
+            ResponseTemplates:
+              application/json: '{"message": "The CV could not be queued. Try again in a minute."}'
+      MethodResponses:
+        - StatusCode: '202'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: '500'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  UploadCvOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref CvResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: !If
+                - UseCloudFrontOrigin
+                - !Sub "'https://${Distribution.DomainName}'"
+                - !Sub "'${AllowedOrigin}'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type'"
+              method.response.header.Access-Control-Max-Age: "'600'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Max-Age: true
+
+  GetCvStatusMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref CvJobResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      RequestParameters:
+        method.request.path.jobId: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StatusFunction.Arn}/invocations'
+
+  # CORS headers on API Gateway's own errors (e.g. body validation failures)
+  Default4xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref Api
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: !If
+          - UseCloudFrontOrigin
+          - !Sub "'https://${Distribution.DomainName}'"
+          - !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: '{"message": "$context.error.message", "details": "$context.error.validationErrorString"}'
+
+  LimitReachedResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref Api
+      ResponseType: ACCESS_DENIED       # returned when the authorizer denies (limit reached)
+      StatusCode: '403'
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: !If
+          - UseCloudFrontOrigin
+          - !Sub "'https://${Distribution.DomainName}'"
+          - !Sub "'${AllowedOrigin}'"
+      ResponseTemplates:
+        application/json: !Sub '{"message": "You have reached the limit of ${MaxCvsPerIp} CVs from this internet connection.", "code": "LIMIT_REACHED"}'
+
+  Default5xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref Api
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: !If
+          - UseCloudFrontOrigin
+          - !Sub "'https://${Distribution.DomainName}'"
+          - !Sub "'${AllowedOrigin}'"
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - UploadCvMethod
+      - UploadCvOptionsMethod
+      - GetCvStatusMethod
+      - Default4xxResponse
+      - Default5xxResponse
+      - LimitReachedResponse
+    Properties:
+      RestApiId: !Ref Api
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref Api
+      DeploymentId: !Ref ApiDeployment
+      StageName: prod
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingRateLimit: 5
+          ThrottlingBurstLimit: 10
+
+  # ---------------------------------------------------------------------------
+  # Website hosting (private S3 bucket behind CloudFront)
+  # ---------------------------------------------------------------------------
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+
+  FrontendOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-frontend-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub '${AWS::StackName} website'
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: frontend
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt FrontendOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: frontend
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # Managed-CachingOptimized
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SecurityHeadersPolicy
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${FrontendBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
+Outputs:
+  WebsiteUrl:
+    Description: Open this in your browser
+    Value: !Sub 'https://${Distribution.DomainName}'
+  ApiUrl:
+    Description: Base URL of the API (written into frontend/config.js by the deploy script)
+    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${ApiStage}'
+  RestApiId:
+    Value: !Ref Api
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
+  DistributionId:
+    Value: !Ref Distribution
+  CvBucketName:
+    Value: !Ref CvBucket
+  QueueUrl:
+    Value: !Ref CvQueue
+  DeadLetterQueueUrl:
+    Value: !Ref CvDeadLetterQueue
+  IpLimitTableName:
+    Description: Delete items here to reset the per-IP limit (e.g. after testing)
+    Value: !Ref IpLimitTable
+  NotificationTopicArn:
+    Value: !Ref NotificationTopic

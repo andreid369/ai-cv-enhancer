@@ -1,0 +1,62 @@
+name: Destroy AWS resources
+
+# Manual only: Actions tab -> "Destroy AWS resources" -> Run workflow -> type the stack name to confirm.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type the stack name (default cv-enhancer) to confirm deletion
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-refs/heads/main
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+      STACK_NAME: ${{ vars.STACK_NAME || 'cv-enhancer' }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Check confirmation
+        run: |
+          if [ "$CONFIRM" != "$STACK_NAME" ]; then
+            echo "::error::Confirmation '$CONFIRM' does not match stack name '$STACK_NAME'. Nothing was deleted."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Empty buckets and delete stack
+        run: |
+          set -euo pipefail
+          out() {
+            aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+          }
+          for key in FrontendBucketName CvBucketName; do
+            bucket="$(out "$key")"
+            if [ -n "$bucket" ] && [ "$bucket" != "None" ]; then
+              echo "Emptying s3://$bucket"
+              aws s3 rm "s3://$bucket" --recursive
+            fi
+          done
+          aws cloudformation delete-stack --stack-name "$STACK_NAME"
+          aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
+
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          artifacts="$(echo "${STACK_NAME}-artifacts-${account}-${AWS_REGION}" | tr '[:upper:]' '[:lower:]')"
+          aws s3 rb "s3://$artifacts" --force || true
+          echo "Stack $STACK_NAME deleted." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blue Pencil: AI CV editor</title>
+  <meta name="description" content="Upload your CV and get a clearer, better structured version edited by AI.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&family=Schibsted+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <a class="wordmark" href="./"><span class="pencil-mark" aria-hidden="true"></span>Blue Pencil</a>
+    <p class="masthead-note">Your CV, edited by AI on AWS</p>
+  </header>
+
+  <main>
+    <!-- Upload view -->
+    <section id="upload-view" class="upload-view" aria-labelledby="intro-title">
+      <div class="intro">
+        <h1 id="intro-title">Hand your CV to an editor.</h1>
+        <p class="lede">Upload your CV and an AI editor rewrites it for clarity, structure and impact. It keeps your facts, flags where numbers would help, and tells you what it changed.</p>
+        <ul class="promises">
+          <li>Nothing invented: only your real experience, reworded</li>
+          <li>Same language as your original CV</li>
+          <li>Nothing is kept: your CV is deleted as soon as you get the result</li>
+          <li>Up to 2 CVs per internet connection</li>
+        </ul>
+      </div>
+
+      <form id="upload-form" class="upload-form" novalidate>
+        <label id="dropzone" class="sheet dropzone" for="cv-file">
+          <input id="cv-file" name="cv-file" type="file" accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown">
+          <span class="drop-icon" aria-hidden="true"></span>
+          <span class="drop-title" id="drop-title">Drop your CV here</span>
+          <span class="drop-hint" id="drop-hint">or click to choose a file. PDF, DOCX or TXT, up to 5 MB.</span>
+        </label>
+
+        <details id="text-preview" class="text-preview" hidden>
+          <summary>Check the text we read from your file</summary>
+          <pre id="text-preview-body"></pre>
+        </details>
+
+        <label class="field">
+          <span class="field-label">Job you're applying for <span class="optional">(optional)</span></span>
+          <input id="target-role" type="text" maxlength="200" placeholder="e.g. Cloud Engineer, AWS">
+          <span class="field-help">The editor puts your most relevant experience first for this role.</span>
+        </label>
+
+        <p id="form-error" class="form-error" role="alert" hidden></p>
+
+        <button id="submit-btn" class="btn btn-primary" type="submit" disabled>Improve my CV</button>
+      </form>
+    </section>
+
+    <!-- Progress view -->
+    <section id="progress-view" class="progress-view" hidden aria-live="polite">
+      <h2>Editing <span id="progress-file"></span></h2>
+      <ol class="steps">
+        <li data-step="read">Reading your file</li>
+        <li data-step="queue">Sending it to the editing queue</li>
+        <li data-step="edit">AI editor is rewriting your CV <span class="step-note">usually under a minute</span></li>
+        <li data-step="done">Ready</li>
+      </ol>
+      <p id="progress-error" class="form-error" role="alert" hidden></p>
+      <button id="retry-btn" class="btn btn-quiet" type="button" hidden>Start again</button>
+    </section>
+
+    <!-- Result view -->
+    <section id="result-view" class="result-view" hidden aria-labelledby="result-title">
+      <div class="result-bar">
+        <h2 id="result-title" tabindex="-1">Your edited CV</h2>
+        <div class="result-actions">
+          <a id="download-btn" class="btn btn-primary" href="#" download="improved-cv.md">Download (.md)</a>
+          <button id="copy-btn" class="btn btn-quiet" type="button">Copy text</button>
+          <button id="new-btn" class="btn btn-quiet" type="button">Edit another CV</button>
+        </div>
+      </div>
+
+      <p class="keep-notice">We've already deleted this CV from our servers. Download or copy it before you close this page.</p>
+
+      <div class="result-layout">
+        <article id="cv-output" class="sheet cv-document"></article>
+        <aside class="margin-notes" aria-labelledby="notes-title">
+          <h3 id="notes-title">Editor's notes</h3>
+          <ul id="changes-list"></ul>
+          <p class="notes-footer">Anything in [square brackets] is a placeholder. Replace it with your real number before you send the CV.</p>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <footer class="colophon">
+    API Gateway → SQS → Lambda → Amazon Bedrock → S3 → SNS
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="vendor/pdf.min.js"></script>
+  <script src="vendor/mammoth.browser.min.js"></script>
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/purify.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false   # never interrupt a CloudFormation deployment halfway
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint CloudFormation templates
+        # W3002 = "local Code path needs `aws cloudformation package`", which deploy.sh does
+        run: cfn-lint infrastructure/template.yaml infrastructure/github-oidc.yaml --ignore-checks W3002
+
+      - name: Check Python syntax
+        run: python -m py_compile backend/*/*.py
+
+  deploy:
+    name: Deploy
+    needs: validate
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write   # lets the job request a GitHub OIDC token to log in to AWS
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+      STACK_NAME: ${{ vars.STACK_NAME || 'cv-enhancer' }}
+      BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID || 'eu.anthropic.claude-sonnet-5-5' }}
+      NOTIFICATION_EMAIL: ${{ secrets.NOTIFICATION_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check settings
+        run: |
+          if [ -z "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ]; then
+            echo "::error::Repository variable AWS_DEPLOY_ROLE_ARN is not set. See README > Deploy with GitHub Actions."
+            exit 1
+          fi
+          if [ -z "$NOTIFICATION_EMAIL" ]; then
+            echo "::error::Repository secret NOTIFICATION_EMAIL is not set."
+            exit 1
+          fi
+
+      - name: Log in to AWS (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy stack and website
+        run: bash scripts/deploy.sh "$NOTIFICATION_EMAIL" "$STACK_NAME" "$AWS_REGION" "$BEDROCK_MODEL_ID"
