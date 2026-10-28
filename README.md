@@ -2,18 +2,9 @@
 
 Upload a CV on a website. An AI model on Amazon Bedrock rewrites it for clarity, structure and impact, and you get an email when it's ready. Each internet connection (IP address) can submit 2 CVs, and no CV data is kept once the result has been delivered.
 
-```
-                  ┌── Lambda authorizer ── DynamoDB (upload count per hashed IP)
-Browser ──POST /cv──▶ API Gateway ──SendMessage──▶ SQS ──▶ Lambda (processor) ──Converse──▶ Bedrock
-   │                                               │ DLQ        │
-   │                                                            ▼
-   └──GET /cv/{jobId}──▶ API Gateway ──▶ Lambda (status) ◀── S3 results/{jobId}.json
-                          (returns the result once, then deletes it)   │ ObjectCreated
-                                                                       ▼
-                                                                      SNS ──▶ email
-                                                                       └──▶ SQS (15 min delay) ──▶ Lambda (cleanup) deletes the result
-Website: S3 (private) + CloudFront (Origin Access Control)
-```
+![AI CV Enhancer architecture on AWS](docs/architecture.png)
+
+Numbers follow one CV through the system. Red arrows show where CV data is deleted. The website itself is served from a private S3 bucket through CloudFront. A scalable version of the diagram is in [`docs/architecture.svg`](docs/architecture.svg).
 
 ## How a request flows
 
@@ -249,4 +240,5 @@ scripts/                       deploy.ps1, deploy.sh, destroy.ps1, reset-ip-limi
 infrastructure/github-oidc.yaml  One-time IAM role that GitHub Actions uses to deploy
 .github/workflows/deploy.yml   Validate on every PR, deploy on push to main
 .github/workflows/destroy.yml  Manual: delete all AWS resources
+docs/architecture.png / .svg   Architecture diagram (official AWS icons)
 ```
