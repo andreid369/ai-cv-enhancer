@@ -2,8 +2,8 @@
 
 For every SQS message (one uploaded CV):
   1. asks the Bedrock model to improve it (Converse API)
-  2. saves the job result (improved CV + changes) to s3://BUCKET/results/{jobId}.json
-     -> S3 event -> SNS -> email + delayed cleanup queue
+  2. saves the job result (improved CV + changes + optional email address) to s3://BUCKET/results/{jobId}.json
+     -> S3 event -> SNS -> mailer Lambda (SES email to the user) + delayed cleanup queue
 
 The original CV is never written to S3. The result is deleted as soon as the website reads it,
 or 15 minutes after the email notification at the latest (see backend/cleanup).
@@ -36,6 +36,8 @@ bedrock = boto3.client(
 )
 
 # Bedrock errors worth retrying via SQS (message becomes visible again)
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 RETRYABLE_ERRORS = {
     "ThrottlingException",
     "ServiceUnavailableException",
@@ -81,7 +83,12 @@ def process_record(record):
         if code in RETRYABLE_ERRORS and receive_count < MAX_RECEIVE_COUNT:
             raise  # let SQS retry later
         logger.error("Bedrock error for job %s: %s", job_id, exc)
-        write_result(job_id, status="failed", error=f"The AI model could not process this CV ({code}). Try again later.")
+        write_result(
+            job_id,
+            status="failed",
+            error=f"The AI model could not process this CV ({code}). Try again later.",
+            email=payload.get("email"),
+        )
         return
 
     improved_cv, changes = parse_model_output(model_text)
@@ -93,6 +100,7 @@ def process_record(record):
         status="completed",
         fileName=payload["fileName"],
         targetRole=payload.get("targetRole") or None,
+        email=payload.get("email"),  # mailer Lambda sends the CV here; deleted with the result
         improvedCv=improved_cv,
         changes=changes,
         model=MODEL_ID,
@@ -110,6 +118,8 @@ def parse_payload(body: str) -> dict:
         raise InvalidInput("The CV text is too short. Upload a CV with selectable text, not a scanned image.")
     payload["cvText"] = cv_text[:60000]
     payload["fileName"] = (payload.get("fileName") or "cv")[:200]
+    email = (payload.get("email") or "").strip()
+    payload["email"] = email if EMAIL_RE.match(email) and len(email) <= 254 else None
     return payload
 
 

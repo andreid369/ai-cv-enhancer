@@ -1,8 +1,9 @@
 """Status Lambda: GET /cv/{jobId}
 
 Returns {"status": "processing"} until the processor has written results/{jobId}.json.
-Once the job is finished it returns the result ONE time and deletes it from S3,
-so no CV data stays in AWS after the browser has received it.
+Once the job is finished it returns the result and deletes it from S3 straight away,
+unless the user asked for an email copy: then the mailer Lambda may still need it and the
+cleanup queue deletes it within 15 minutes.
 """
 
 import json
@@ -33,7 +34,11 @@ def handler(event, context):
         raise
 
     result = json.loads(obj["Body"].read())
-    s3.delete_object(Bucket=BUCKET, Key=key)  # read once, then gone
+    if result.get("email"):
+        # The mailer Lambda may still need it - the cleanup queue deletes it within 15 minutes.
+        result.pop("email")
+    else:
+        s3.delete_object(Bucket=BUCKET, Key=key)  # read once, then gone
     return response(200, result)
 
 

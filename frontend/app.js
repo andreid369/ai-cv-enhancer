@@ -9,6 +9,7 @@
   const MAX_TEXT = 60000;
   const POLL_EVERY_MS = 4000;
   const POLL_TIMEOUT_MS = 6 * 60 * 1000;
+  const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
   if (window.pdfjsLib) {
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
@@ -27,6 +28,9 @@
     preview: $("text-preview"),
     previewBody: $("text-preview-body"),
     targetRole: $("target-role"),
+    email: $("email"),
+    emailNote: $("email-note"),
+    keepNotice: $("keep-notice"),
     formError: $("form-error"),
     submitBtn: $("submit-btn"),
     progressFile: $("progress-file"),
@@ -39,7 +43,7 @@
     newBtn: $("new-btn"),
   };
 
-  const state = { file: null, cvText: "", improvedCv: "" };
+  const state = { file: null, cvText: "", improvedCv: "", email: "" };
 
   // ---------------------------------------------------------------- file handling
   els.fileInput.addEventListener("change", () => {
@@ -152,6 +156,14 @@
     if (!state.cvText) {
       return showFormError("Choose your CV file first.");
     }
+    const email = els.email.value.trim();
+    if (email && !EMAIL_RE.test(email)) {
+      els.email.focus();
+      return showFormError("Check the email address, or leave it empty to only see the CV on this page.");
+    }
+    state.email = email;
+    els.emailNote.textContent = email ? `We'll also email it to ${email}.` : "";
+    els.emailNote.hidden = !email;
 
     showView("progress");
     els.progressFile.textContent = state.file.name;
@@ -166,6 +178,7 @@
           fileName: state.file.name.slice(0, 200),
           cvText: state.cvText,
           ...(els.targetRole.value.trim() ? { targetRole: els.targetRole.value.trim().slice(0, 200) } : {}),
+          ...(email ? { email } : {}),
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -203,7 +216,9 @@
       if (body.status === "completed" || body.status === "failed") return body;
     }
     throw new Error(
-      "This is taking longer than usual. You'll get an email when it's done, or you can try again in a few minutes."
+      state.email
+        ? `This is taking longer than usual. We'll email the CV to ${state.email} when it's done.`
+        : "This is taking longer than usual. Try again in a few minutes."
     );
   }
 
@@ -232,6 +247,11 @@
     if (els.downloadBtn.href.startsWith("blob:")) URL.revokeObjectURL(els.downloadBtn.href);
     els.downloadBtn.href = URL.createObjectURL(new Blob([state.improvedCv], { type: "text/markdown;charset=utf-8" }));
 
+    if (state.email) {
+      els.keepNotice.textContent = `A copy is on its way to ${state.email}. We delete this CV from our servers within 15 minutes.`;
+    } else {
+      els.keepNotice.textContent = "We've already deleted this CV from our servers. Download or copy it before you close this page.";
+    }
     showView("result");
     $("result-title").focus({ preventScroll: true });
     window.scrollTo({ top: 0 });

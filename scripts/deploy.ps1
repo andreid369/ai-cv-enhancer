@@ -4,11 +4,12 @@
   writes frontend/config.js and uploads the website.
 
 .EXAMPLE
-  .\scripts\deploy.ps1 -NotificationEmail you@example.com
-  .\scripts\deploy.ps1 -NotificationEmail you@example.com -ModelId eu.anthropic.claude-haiku-5-5
+  .\scripts\deploy.ps1 -SenderEmail you@example.com
+  .\scripts\deploy.ps1 -SenderEmail you@example.com -ModelId eu.anthropic.claude-haiku-5-5
 #>
 param(
-  [Parameter(Mandatory = $true)] [string] $NotificationEmail,
+  [Parameter(Mandatory = $true)] [string] $SenderEmail,   # "From" address of the CV emails (verified in SES)
+  [ValidateSet("true", "false")] [string] $CreateSenderIdentity = "true",
   [string] $StackName = "cv-enhancer",
   [string] $Region = "eu-central-1",
   [string] $ModelId = "eu.anthropic.claude-sonnet-5-5",
@@ -48,7 +49,7 @@ aws cloudformation deploy `
   --region $Region `
   --capabilities CAPABILITY_IAM `
   --no-fail-on-empty-changeset `
-  --parameter-overrides "NotificationEmail=$NotificationEmail" "BedrockModelId=$ModelId" "AllowedOrigin=$AllowedOrigin"
+  --parameter-overrides "SenderEmail=$SenderEmail" "CreateSenderIdentity=$CreateSenderIdentity" "BedrockModelId=$ModelId" "AllowedOrigin=$AllowedOrigin"
 Assert-Ok "cloudformation deploy"
 
 $Outputs = aws cloudformation describe-stacks --stack-name $StackName --region $Region --query "Stacks[0].Outputs" --output json | ConvertFrom-Json
@@ -83,4 +84,4 @@ Write-Host ""
 Write-Host "Done."
 Write-Host "  Website: $WebsiteUrl"
 Write-Host "  API:     $ApiUrl"
-Write-Host "  Confirm the SNS subscription email sent to $NotificationEmail to receive notifications."
+Write-Host "  First deployment: click the Amazon SES verification link sent to $SenderEmail."

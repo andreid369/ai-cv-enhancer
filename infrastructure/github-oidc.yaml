@@ -2,6 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   One-time setup - lets GitHub Actions in ONE repository deploy the cv-enhancer stack
   using short-lived credentials (OpenID Connect). No AWS access keys are stored in GitHub.
+  After it exists, the deploy workflow keeps this stack updated automatically.
 
 Parameters:
   GitHubOwner:
@@ -144,6 +145,48 @@ Resources:
                 Effect: Allow
                 Action: logs:DescribeLogGroups
                 Resource: '*'
+              - Sid: SesSenderIdentity
+                Effect: Allow
+                Action:
+                  - ses:CreateEmailIdentity
+                  - ses:DeleteEmailIdentity
+                  - ses:GetEmailIdentity
+                  - ses:PutEmailIdentityDkimAttributes
+                  - ses:PutEmailIdentityFeedbackAttributes
+                  - ses:PutEmailIdentityMailFromAttributes
+                  - ses:PutEmailIdentityConfigurationSetAttributes
+                  - ses:TagResource
+                  - ses:UntagResource
+                Resource: !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*'
+              # --- Lets the deploy workflow keep THIS stack up to date, so new permissions
+              # --- ship with a normal push instead of a manual console update.
+              - Sid: UpdateThisAccessStack
+                Effect: Allow
+                Action: 'cloudformation:*'
+                Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*'
+              - Sid: UpdateOwnRole
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/github-deploy-${AppStackName}'
+              - Sid: ReadGitHubIdentityProvider
+                Effect: Allow
+                Action:
+                  - iam:GetOpenIDConnectProvider
+                  - iam:UpdateOpenIDConnectProviderThumbprint
+                  - iam:AddClientIDToOpenIDConnectProvider
+                  - iam:TagOpenIDConnectProvider
+                  - iam:UntagOpenIDConnectProvider
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
               - Sid: CloudFront   # distribution IDs are random, so they can't be scoped by name
                 Effect: Allow
                 Action: 'cloudfront:*'
