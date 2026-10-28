@@ -48,9 +48,7 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
       STACK_NAME: ${{ vars.STACK_NAME || 'cv-enhancer' }}
       BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID || 'eu.anthropic.claude-sonnet-5-5' }}
-      SENDER_EMAIL: ${{ vars.SENDER_EMAIL }}
-      CREATE_SENDER_IDENTITY: ${{ vars.CREATE_SENDER_IDENTITY || 'true' }}
-      ACCESS_STACK: ${{ vars.ACCESS_STACK_NAME || 'github-oidc-cv-enhancer' }}
+      NOTIFICATION_EMAIL: ${{ secrets.NOTIFICATION_EMAIL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -60,8 +58,8 @@ jobs:
             echo "::error::Repository variable AWS_DEPLOY_ROLE_ARN is not set. See README > Deploy with GitHub Actions."
             exit 1
           fi
-          if [ -z "$SENDER_EMAIL" ]; then
-            echo "::error::Repository variable SENDER_EMAIL (the From address of the CV emails) is not set."
+          if [ -z "$NOTIFICATION_EMAIL" ]; then
+            echo "::error::Repository secret NOTIFICATION_EMAIL is not set."
             exit 1
           fi
 
@@ -71,28 +69,5 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Update GitHub deploy permissions
-        # Applies infrastructure/github-oidc.yaml to the existing access stack, so permission
-        # changes in that file need no manual console step. Parameters keep their current values.
-        run: |
-          set +e
-          out="$(aws cloudformation deploy \
-            --template-file infrastructure/github-oidc.yaml \
-            --stack-name "$ACCESS_STACK" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset 2>&1)"
-          code=$?
-          echo "$out"
-          if [ $code -ne 0 ]; then
-            if echo "$out" | grep -qiE "AccessDenied|not authorized"; then
-              echo "::error::The deploy role can't update its own stack yet. One last time, update the '$ACCESS_STACK' stack by hand with infrastructure/github-oidc.yaml (README > Deploy with GitHub Actions > Updating the GitHub access stack). After that, this step does it automatically."
-            fi
-            exit $code
-          fi
-          if echo "$out" | grep -q "Successfully created/updated stack"; then
-            echo "Permissions changed - waiting for IAM to apply them."
-            sleep 15
-          fi
-
       - name: Deploy stack and website
-        run: bash scripts/deploy.sh "$SENDER_EMAIL" "$STACK_NAME" "$AWS_REGION" "$BEDROCK_MODEL_ID"
+        run: bash scripts/deploy.sh "$NOTIFICATION_EMAIL" "$STACK_NAME" "$AWS_REGION" "$BEDROCK_MODEL_ID"

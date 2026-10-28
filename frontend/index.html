@@ -25,7 +25,7 @@
         <ul class="promises">
           <li>Nothing invented: only your real experience, reworded</li>
           <li>Same language as your original CV</li>
-          <li>Nothing is kept: your CV is deleted within 15 minutes</li>
+          <li>Nothing is kept: your CV is deleted as soon as you get the result</li>
           <li>Up to 2 CVs per internet connection</li>
         </ul>
       </div>
@@ -49,12 +49,6 @@
           <span class="field-help">The editor puts your most relevant experience first for this role.</span>
         </label>
 
-        <label class="field">
-          <span class="field-label">Email me the edited CV <span class="optional">(optional)</span></span>
-          <input id="email" type="email" maxlength="254" autocomplete="email" placeholder="you@example.com">
-          <span class="field-help">Used only to send you this CV, then deleted with it.</span>
-        </label>
-
         <p id="form-error" class="form-error" role="alert" hidden></p>
 
         <button id="submit-btn" class="btn btn-primary" type="submit" disabled>Improve my CV</button>
@@ -68,7 +62,7 @@
         <li data-step="read">Reading your file</li>
         <li data-step="queue">Sending it to the editing queue</li>
         <li data-step="edit">AI editor is rewriting your CV <span class="step-note">usually under a minute</span></li>
-        <li data-step="done">Ready<span id="email-note" class="step-note" hidden></span></li>
+        <li data-step="done">Ready</li>
       </ol>
       <p id="progress-error" class="form-error" role="alert" hidden></p>
       <button id="retry-btn" class="btn btn-quiet" type="button" hidden>Start again</button>
@@ -85,7 +79,7 @@
         </div>
       </div>
 
-      <p id="keep-notice" class="keep-notice">We've already deleted this CV from our servers. Download or copy it before you close this page.</p>
+      <p class="keep-notice">We've already deleted this CV from our servers. Download or copy it before you close this page.</p>
 
       <div class="result-layout">
         <article id="cv-output" class="sheet cv-document"></article>
@@ -99,7 +93,7 @@
   </main>
 
   <footer class="colophon">
-    API Gateway → SQS → Lambda → Amazon Bedrock → S3 → SNS → SES
+    API Gateway → SQS → Lambda → Amazon Bedrock → S3 → SNS
   </footer>
 
   <script src="config.js"></script>

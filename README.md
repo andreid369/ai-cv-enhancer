@@ -1,6 +1,6 @@
 # AI CV Enhancer – event-driven app on AWS
 
-Upload a CV on a website. An AI model on Amazon Bedrock rewrites it for clarity, structure and impact, and, if you type your email address on the site, you also get the improved CV by email. Each internet connection (IP address) can submit 2 CVs, and no CV data is kept once the result has been delivered.
+Upload a CV on a website. An AI model on Amazon Bedrock rewrites it for clarity, structure and impact, and you get an email when it's ready. Each internet connection (IP address) can submit 2 CVs, and no CV data is kept once the result has been delivered.
 
 ![AI CV Enhancer architecture on AWS](docs/architecture.png)
 
@@ -8,18 +8,16 @@ Numbers follow one CV through the system. Red arrows show where CV data is delet
 
 ## How a request flows
 
-1. **Frontend** (`frontend/`) reads the CV in the browser (PDF via pdf.js, DOCX via mammoth, TXT/MD as-is) and sends `{fileName, cvText, targetRole, email}` to `POST /cv` (`targetRole` and `email` are optional).
+1. **Frontend** (`frontend/`) reads the CV in the browser (PDF via pdf.js, DOCX via mammoth, TXT/MD as-is) and sends `{fileName, cvText, targetRole}` to `POST /cv`.
 2. **Lambda authorizer** (`backend/authorizer/`) counts uploads per client IP in DynamoDB. The 3rd upload from the same IP gets HTTP 403 "limit reached".
 3. **API Gateway** validates the body against a JSON schema and writes it **directly to SQS** (AWS service integration, no Lambda in between). The API Gateway request ID is returned as the `jobId`.
 4. **SQS** buffers the job. Failed messages are retried up to 3 times, then moved to a dead-letter queue.
-5. **Processor Lambda** (`backend/processor/`) calls **Amazon Bedrock** (Converse API) with the prompt in `prompt.py` and saves only `results/{jobId}.json` (improved CV, list of changes, token usage, and the email address if one was given). The original CV is never written to S3.
-6. **S3** sends an event for `results/*.json` to **SNS**, which fans it out to two subscribers:
-   - the **mailer Lambda** (`backend/mailer/`), which emails the improved CV through **Amazon SES** to the address typed on the site (CV in the email body and attached as `improved-cv.md`);
-   - a **cleanup queue** that holds the event for 15 minutes.
-7. The website polls `GET /cv/{jobId}` (**status Lambda**) and shows the result. If no email was requested, the result is **deleted from S3 immediately**; otherwise the mailer may still need it, so it stays until the cleanup step. The download is generated in the browser.
-8. After 15 minutes the **cleanup Lambda** (`backend/cleanup/`) deletes the result, whatever happened before.
+5. **Processor Lambda** (`backend/processor/`) calls **Amazon Bedrock** (Converse API) with the prompt in `prompt.py` and saves only `results/{jobId}.json` (improved CV, list of changes, token usage). The original CV is never written to S3.
+6. **S3** sends an event for `results/*.json` to **SNS**, which emails the subscribed address and also drops a message into a cleanup queue.
+7. The website polls `GET /cv/{jobId}` (**status Lambda**). The first time the result is ready it is returned and **immediately deleted** from S3. The download is generated in the browser.
+8. If the result is never fetched, the **cleanup Lambda** (`backend/cleanup/`) deletes it 15 minutes after the email notification.
 
-Why SES and not SNS for the email: an SNS email subscription only reaches addresses that clicked a confirmation link, and every subscriber gets every message. SES sends one email to one address, which is what "email me my CV" needs.
+Two small additions to the diagram: the website itself is hosted on S3 + CloudFront, and a `GET /cv/{jobId}` route lets the browser show the result (SNS email can only go to confirmed subscribers, not to every visitor).
 
 ## AI model and prompt
 
@@ -42,20 +40,6 @@ The prompt (`backend/processor/prompt.py`) tells the model to:
 ## Prerequisites
 
 - **Bedrock model access**: in the Bedrock console (region `eu-central-1`) open the **Playground**, select the model and send one test message. For Anthropic models, first-time accounts are asked to submit a short use-case form. Do this once before the first deployment.
-- **A sender address for the CV emails** (`SENDER_EMAIL`): an address you can open, e.g. your own. See [Email delivery (Amazon SES)](#email-delivery-amazon-ses).
-
-## Email delivery (Amazon SES)
-
-The site's email field is optional. When it's filled in, the improved CV is sent from `SENDER_EMAIL` through Amazon SES. Two things have to be in place on the AWS side:
-
-1. **Verify the sender address.** On the first deployment the stack registers `SENDER_EMAIL` in SES, and AWS sends a verification link to it. Click it. Until you do, every send fails with `MessageRejected`, though the website still shows the CV.
-   If the address (or its whole domain) is already verified in SES in this region, set `CREATE_SENDER_IDENTITY` to `false` (GitHub variable) or `-CreateSenderIdentity false` (PowerShell); otherwise the deployment fails with "already exists".
-
-2. **Leave the SES sandbox, or verify recipients while testing.** New AWS accounts start in the SES *sandbox*: SES only delivers to addresses that are verified in SES, and at most 200 emails per day.
-   - **For testing:** in **SES → Identities → Create identity → Email address**, add the address you'll type on the site and click the link AWS sends to it.
-   - **For real users:** in **SES → Account dashboard → Request production access**, describe the use (transactional email, only sent on request, a few per day). AWS usually answers within a day. After that, any address works.
-
-Deliverability: with a free webmail sender such as `@gmail.com`, many providers put SES emails in spam, because the email doesn't come from Gmail's servers. For better delivery, verify a domain you own in SES (with the DKIM records SES gives you) and use an address on it as `SENDER_EMAIL`.
 
 ## Deploy with GitHub Actions (recommended)
 
@@ -82,28 +66,15 @@ Every push to `main` validates the templates and code, then deploys the stack an
    | Type | Name | Value |
    |---|---|---|
    | Variable | `AWS_DEPLOY_ROLE_ARN` | the `DeployRoleArn` from step 1 |
-   | Variable | `SENDER_EMAIL` | the "From" address of the CV emails (see [Email delivery](#email-delivery-amazon-ses)) |
-   | Variable (optional) | `CREATE_SENDER_IDENTITY` | `false` if `SENDER_EMAIL` is already verified in SES; default `true` |
+   | Secret | `NOTIFICATION_EMAIL` | the address that receives the "CV processed" emails |
    | Variable (optional) | `AWS_REGION` | default `eu-central-1` |
    | Variable (optional) | `BEDROCK_MODEL_ID` | default `eu.anthropic.claude-sonnet-5-5` |
    | Variable (optional) | `STACK_NAME` | default `cv-enhancer` (lowercase; must match `AppStackName` in step 1) |
 
 3. **Push to `main`** (or run **Actions → Deploy to AWS → Run workflow**). The first run takes about 5–8 minutes because of CloudFront. The website URL appears on the run's summary page.
-4. **Click the SES verification link** AWS sends to `SENDER_EMAIL`, and while the account is in the SES sandbox, verify the addresses you test with (see [Email delivery](#email-delivery-amazon-ses)).
+4. **Confirm the SNS subscription email** AWS sends to `NOTIFICATION_EMAIL`.
 
 Optional: in **Settings → Environments → production** add yourself as a required reviewer, so every deployment waits for your approval.
-
-### Updating the GitHub access stack
-
-You don't normally need to: every deployment first applies `infrastructure/github-oidc.yaml` to the `github-oidc-cv-enhancer` stack (step "Update GitHub deploy permissions"), so permission changes arrive with a normal push.
-
-The exception is a stack created from an older version of that file: its role isn't yet allowed to update itself, and the workflow stops with "The deploy role can't update its own stack yet". Update it by hand **one last time**:
-
-- **AWS console:** CloudFormation → `github-oidc-cv-enhancer` → **Update** → *Replace existing template* → *Upload a template file* → choose `infrastructure/github-oidc.yaml` → **Next** (keep all parameters) → **Next** → tick the IAM acknowledgement → **Submit**. Then re-run the failed workflow.
-- **or one command** (AWS CLI, from the repository folder):
-  ```powershell
-  aws cloudformation deploy --template-file infrastructure/github-oidc.yaml --stack-name github-oidc-cv-enhancer --region eu-central-1 --capabilities CAPABILITY_NAMED_IAM
-  ```
 
 To remove everything from AWS later, see [Delete everything from AWS](#delete-everything-from-aws).
 
@@ -112,9 +83,9 @@ To remove everything from AWS later, see [Delete everything from AWS](#delete-ev
 Needs AWS CLI v2 configured with `aws configure`. Windows PowerShell, from this folder:
 
 ```powershell
-.\scripts\deploy.ps1 -SenderEmail you@example.com
+.\scripts\deploy.ps1 -NotificationEmail you@example.com
 # cheaper model:
-.\scripts\deploy.ps1 -SenderEmail you@example.com -ModelId eu.anthropic.claude-haiku-5-5
+.\scripts\deploy.ps1 -NotificationEmail you@example.com -ModelId eu.anthropic.claude-haiku-5-5
 ```
 
 Linux / macOS / Git Bash: `./scripts/deploy.sh you@example.com`
@@ -147,12 +118,10 @@ Invoke-RestMethod "$ApiUrl/cv/$($job.jobId)"   # repeat until status = completed
 | `AccessDeniedException` from Bedrock | Model access not enabled, or wrong model ID for the region |
 | `ValidationException` | Model ID typo, or the model isn't offered through that inference profile |
 | Messages in the dead-letter queue | Repeated Bedrock throttling – check quotas or switch to Haiku |
-| No email arrives | Log group `/aws/lambda/<stack>-MailerFunction-…`. `MessageRejected … not verified`: click the SES link for `SENDER_EMAIL`, or (SES sandbox) verify the recipient too. Also check spam |
-| Deployment fails: email identity "already exists" | `SENDER_EMAIL` is already verified in SES – set `CREATE_SENDER_IDENTITY=false` |
-| Deployment fails: not authorized to perform `ses:CreateEmailIdentity` | Update the `github-oidc-cv-enhancer` stack with the current `infrastructure/github-oidc.yaml` |
+| No email | SNS subscription not confirmed (check spam) |
 | CORS error in browser | You're testing locally – redeploy with `-AllowedOrigin "*"` |
 | "You have reached the limit of 2 CVs" | Expected after 2 uploads from your IP – run `scripts/reset-ip-limit.ps1` |
-| Refreshing the result page shows nothing | Expected: the result is deleted after it's shown (or within 15 minutes when emailed) |
+| Refreshing the result page shows nothing | Expected: the result is deleted after it's shown once |
 
 ## Security and privacy
 
@@ -160,14 +129,12 @@ Invoke-RestMethod "$ApiUrl/cv/$($job.jobId)"   # repeat until status = completed
 - **Per-IP limit**: each client IP can submit `MaxCvsPerIp` CVs (default 2), forever by default. Set `IpLimitResetDays` (e.g. 30) to let the counter reset. The IP is stored only as a salted SHA-256 hash, never in plain text. The counter is atomic, so parallel requests can't get past it. Note that people sharing one public IP (an office, or a mobile operator using carrier-grade NAT) share the same 2 uploads, and someone determined can change IP (VPN, mobile data). For a stricter limit, add a login (Cognito) and limit per user.
 - **No CV retention**:
   - the original CV is never written to S3;
-  - the result is deleted from S3 the moment the website receives it; if the user asked for an email copy, it's deleted at the latest 15 minutes after it was saved (cleanup queue);
+  - the result is deleted from S3 the moment the website receives it, or at the latest 15 minutes after the email notification is sent (cleanup queue);
   - an S3 lifecycle rule deletes anything left after 1 day as a safety net;
   - SQS messages (which contain the CV text) are deleted after processing and expire after 1 hour, including in the dead-letter queue;
-  - the email address is stored only inside that same result file, so it's deleted with it; logs never contain the address;
+  - the notification email contains only the job ID, not the CV;
   - Bedrock does not store prompts or answers unless you turn on model invocation logging, so leave that off;
   - CloudWatch logs contain job IDs and token counts, never CV text.
-- **Deploy role**: GitHub Actions can only use the role from the `main` branch of your repository, and only for resources named after the stack. Because it also updates its own access stack, whoever can push to `main` can widen its permissions. Protect `main` (**Settings → Branches → Add rule → Require a pull request**) and/or add a required reviewer to the `production` environment.
-- **Email abuse**: anyone can type any address, so the site could be used to send a CV-shaped email to a stranger. The per-IP limit caps this at 2 emails per connection, and every email says it was requested on this website. Keep that in mind before you request SES production access.
 - Rate limits on top of that: API Gateway allows 5 requests/second, and the processor handles at most 2 CVs at a time.
 
 ### Resetting the IP limit after testing
@@ -182,7 +149,7 @@ The project creates resources in two CloudFormation stacks plus one bucket outsi
 
 | What | Created by | Contains |
 |---|---|---|
-| Stack `cv-enhancer` | deploy workflow / `deploy.ps1` | Website bucket, CloudFront, API Gateway, SQS queues, 5 Lambdas, S3 CV bucket, SNS topic, SES sender identity, DynamoDB IP table, IAM roles, log groups |
+| Stack `cv-enhancer` | deploy workflow / `deploy.ps1` | Website bucket, CloudFront, API Gateway, SQS queues, 4 Lambdas, S3 CV bucket, SNS topic + email subscription, DynamoDB IP table, IAM roles, log groups |
 | Bucket `cv-enhancer-artifacts-<account>-<region>` | deploy workflow / `deploy.ps1` | Packaged Lambda code |
 | Stack `github-oidc-cv-enhancer` | you, once (setup step 1) | GitHub identity provider + `github-deploy-cv-enhancer` IAM role |
 
@@ -225,7 +192,7 @@ or **CloudFormation → `github-oidc-cv-enhancer` → Delete** in the console.
 
 If you created this stack with `CreateOidcProvider=false`, the GitHub identity provider in IAM was there before and is left in place, since other projects may use it.
 
-Then in GitHub, **Settings → Secrets and variables → Actions**: delete the variables `AWS_DEPLOY_ROLE_ARN` and `SENDER_EMAIL` (and the optional ones you set). Otherwise the next push to `main` will try to deploy and fail. To stop deployments but keep the repo, you can also disable the workflow under **Actions → Deploy to AWS → ⋯ → Disable workflow**.
+Then in GitHub, **Settings → Secrets and variables → Actions**: delete `AWS_DEPLOY_ROLE_ARN` and `NOTIFICATION_EMAIL`. Otherwise the next push to `main` will try to deploy and fail. To stop deployments but keep the repo, you can also disable the workflow under **Actions → Deploy to AWS → ⋯ → Disable workflow**.
 
 ### Step 3 – Check that nothing is left
 
@@ -258,7 +225,6 @@ aws logs delete-log-group --region $r --log-group-name <name-from-the-list>
 
 - **Bedrock model access**: the model agreement in the Bedrock console stays, but you only pay per request, so no charge without use.
 - **The GitHub repository**: delete it under **Settings → Danger zone** if you want it gone.
-- **SES**: the `SENDER_EMAIL` identity is deleted with the stack (unless you set `CREATE_SENDER_IDENTITY=false`), but recipient addresses you verified by hand stay under **SES → Identities**, and so does production access if you requested it. Delete the identities there if you like; they cost nothing.
 
 ## Project layout
 
@@ -267,9 +233,8 @@ infrastructure/template.yaml   CloudFormation template (all AWS resources)
 backend/authorizer/app.py      Per-IP upload limit (DynamoDB counter)
 backend/processor/app.py       SQS -> Bedrock -> S3
 backend/processor/prompt.py    System prompt + user prompt
-backend/status/app.py          GET /cv/{jobId} (returns the result, then deletes it)
-backend/mailer/app.py          Emails the improved CV via Amazon SES
-backend/cleanup/app.py         Deletes results 15 min after they were saved
+backend/status/app.py          GET /cv/{jobId} (returns the result once, then deletes it)
+backend/cleanup/app.py         Deletes results 15 min after the email notification
 frontend/                      Static website (index.html, app.js, styles.css, vendor libs)
 scripts/                       deploy.ps1, deploy.sh, destroy.ps1, reset-ip-limit.ps1
 infrastructure/github-oidc.yaml  One-time IAM role that GitHub Actions uses to deploy

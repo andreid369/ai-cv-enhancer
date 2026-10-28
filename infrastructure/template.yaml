@@ -1,23 +1,15 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   AI CV Enhancer - event-driven app.
-  Website (S3 + CloudFront) -> API Gateway -> SQS -> Lambda -> Amazon Bedrock -> S3 -> SNS -> Lambda -> SES email to the user.
+  Website (S3 + CloudFront) -> API Gateway -> SQS -> Lambda -> Amazon Bedrock -> S3 -> SNS email.
   Max N CVs per client IP; no CV data is kept after the result is delivered.
 
 Parameters:
-  SenderEmail:
+  NotificationEmail:
     Type: String
-    Description: >
-      "From" address of the emails that deliver the improved CV. Amazon SES sends a verification link to it;
-      click it before the first email can go out.
+    Description: Email address that receives a notification each time a CV has been processed (you must confirm the SNS subscription).
     AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
     ConstraintDescription: Must be a valid email address.
-
-  CreateSenderIdentity:
-    Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
-    Description: Set to false if SenderEmail (or its whole domain) is already a verified identity in Amazon SES in this region.
 
   BedrockModelId:
     Type: String
@@ -56,7 +48,6 @@ Parameters:
 Conditions:
   UseCloudFrontOrigin: !Equals [!Ref AllowedOrigin, '']
   IpLimitResets: !Not [!Equals [!Ref IpLimitResetDays, 0]]
-  CreateSenderIdentityCond: !Equals [!Ref CreateSenderIdentity, 'true']
 
 Resources:
   # ---------------------------------------------------------------------------
@@ -66,6 +57,9 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       DisplayName: CV Enhancer
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref NotificationEmail
 
   NotificationTopicPolicy:
     Type: AWS::SNS::TopicPolicy
@@ -83,84 +77,6 @@ Resources:
             Condition:
               StringEquals:
                 aws:SourceAccount: !Ref AWS::AccountId
-
-  # ---------------------------------------------------------------------------
-  # Email delivery: SNS -> mailer Lambda -> Amazon SES -> the address typed on the website
-  # ---------------------------------------------------------------------------
-  SenderIdentity:
-    Type: AWS::SES::EmailIdentity
-    Condition: CreateSenderIdentityCond
-    Properties:
-      EmailIdentity: !Ref SenderEmail
-
-  MailerRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: mailer
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: s3:GetObject
-                Resource: !Sub '${CvBucket.Arn}/results/*'
-              - Effect: Allow           # S3 answers "not found" instead of "access denied"
-                Action: s3:ListBucket
-                Resource: !GetAtt CvBucket.Arn
-              - Effect: Allow
-                Action:
-                  - ses:SendEmail
-                  - ses:SendRawEmail
-                # SES checks the sender identity (and, in the SES sandbox, the recipient identity too)
-                Resource: !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*'
-
-  MailerFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      Description: Emails the improved CV to the address entered on the website, using Amazon SES.
-      Runtime: python3.13
-      Handler: app.handler
-      Code: ../backend/mailer
-      Role: !GetAtt MailerRole.Arn
-      Timeout: 30
-      MemorySize: 256
-      Architectures: [arm64]
-      Environment:
-        Variables:
-          BUCKET_NAME: !Ref CvBucket
-          SENDER_EMAIL: !Ref SenderEmail
-          WEBSITE_URL: !Sub 'https://${Distribution.DomainName}'
-
-  MailerLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub '/aws/lambda/${MailerFunction}'
-      RetentionInDays: 14
-
-  MailerInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref MailerFunction
-      Principal: sns.amazonaws.com
-      SourceArn: !Ref NotificationTopic
-
-  MailerSubscription:
-    Type: AWS::SNS::Subscription
-    DependsOn: MailerInvokePermission
-    Properties:
-      TopicArn: !Ref NotificationTopic
-      Protocol: lambda
-      Endpoint: !GetAtt MailerFunction.Arn
 
   # ---------------------------------------------------------------------------
   # Data deletion: SNS also feeds a delayed queue that deletes the result
@@ -618,10 +534,6 @@ Resources:
           targetRole:
             type: string
             maxLength: 200
-          email:
-            type: string
-            maxLength: 254
-            pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
 
   BodyValidator:
     Type: AWS::ApiGateway::RequestValidator

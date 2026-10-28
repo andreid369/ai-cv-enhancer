@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 # Deploys the AI CV Enhancer (Linux / macOS / Git Bash / WSL).
-# Usage: ./scripts/deploy.sh <sender-email> [stack-name] [region] [model-id]
-#   sender-email: "From" address of the emails that deliver the CV (verified in Amazon SES)
-#   CREATE_SENDER_IDENTITY=false  if that address/domain is already verified in SES
+# Usage: ./scripts/deploy.sh you@example.com [stack-name] [region] [model-id]
 set -euo pipefail
 
-SENDER_EMAIL="${1:?Usage: deploy.sh <sender-email> [stack-name] [region] [model-id]}"
+EMAIL="${1:?Usage: deploy.sh <notification-email> [stack-name] [region] [model-id]}"
 STACK="${2:-cv-enhancer}"
 REGION="${3:-eu-central-1}"
 MODEL_ID="${4:-eu.anthropic.claude-sonnet-5-5}"
 ALLOWED_ORIGIN="${ALLOWED_ORIGIN:-}"
-CREATE_SENDER_IDENTITY="${CREATE_SENDER_IDENTITY:-true}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
@@ -38,7 +35,7 @@ aws cloudformation deploy \
   --template-file "$ROOT/infrastructure/packaged.yaml" \
   --stack-name "$STACK" --region "$REGION" \
   --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset \
-  --parameter-overrides "SenderEmail=$SENDER_EMAIL" "CreateSenderIdentity=$CREATE_SENDER_IDENTITY" "BedrockModelId=$MODEL_ID" "AllowedOrigin=$ALLOWED_ORIGIN"
+  --parameter-overrides "NotificationEmail=$EMAIL" "BedrockModelId=$MODEL_ID" "AllowedOrigin=$ALLOWED_ORIGIN"
 
 out() {
   aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
@@ -63,7 +60,7 @@ echo
 echo "Done."
 echo "  Website: $WEBSITE"
 echo "  API:     $API_URL"
-echo "  First deployment: click the Amazon SES verification link sent to $SENDER_EMAIL."
+echo "  Confirm the SNS subscription email sent to $EMAIL."
 
 # When running in GitHub Actions, show the links on the workflow run page.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
