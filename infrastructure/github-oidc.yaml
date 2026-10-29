@@ -50,7 +50,9 @@ Resources:
                 - CreateProvider
                 - !Ref GitHubOidcProvider
                 - !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
-            Action: sts:AssumeRoleWithWebIdentity
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+              - sts:TagSession   # the GitHub login action sends session tags; without this AWS answers 'Not authorized'
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
