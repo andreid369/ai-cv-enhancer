@@ -5,13 +5,13 @@
 
 .EXAMPLE
   .\scripts\deploy.ps1 -NotificationEmail you@example.com
-  .\scripts\deploy.ps1 -NotificationEmail you@example.com -ModelId eu.anthropic.claude-haiku-5-5
+  .\scripts\deploy.ps1 -NotificationEmail you@example.com -ModelId eu.anthropic.claude-sonnet-5-5
 #>
 param(
   [Parameter(Mandatory = $true)] [string] $NotificationEmail,
   [string] $StackName = "cv-enhancer",
   [string] $Region = "eu-central-1",
-  [string] $ModelId = "eu.anthropic.claude-sonnet-5-5",
+  [string] $ModelId = "eu.amazon.nova-2-lite-v1:0",
   [string] $AllowedOrigin = ""
 )
 

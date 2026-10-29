@@ -23,9 +23,9 @@ Two small additions to the diagram: the website itself is hosted on S3 + CloudFr
 
 | Model (parameter `BedrockModelId`) | When to use it |
 |---|---|
-| `eu.anthropic.claude-sonnet-5-5` (default) | Best writing quality. EU inference profile keeps CV data inside EU regions (GDPR). |
+| `eu.amazon.nova-2-lite-v1:0` (default) | Amazon's own model: cheap and fast, no use-case form needed. EU inference profile keeps CV data inside EU regions (GDPR). |
 | `eu.anthropic.claude-haiku-5-5` | Faster and cheaper, still good for CV rewriting. |
-| `eu.amazon.nova-2-lite-v1:0` | Cheapest option, Amazon's own model. |
+| `eu.anthropic.claude-sonnet-5-5` | Best writing quality, costs more. |
 
 In `eu-central-1` Anthropic models can only be called through the `eu.` (or `global.`) inference profiles, not by the bare model ID.
 
@@ -39,7 +39,7 @@ The prompt (`backend/processor/prompt.py`) tells the model to:
 
 ## Prerequisites
 
-- **Bedrock model access**: in the Bedrock console (region `eu-central-1`) open the **Playground**, select the model and send one test message. For Anthropic models, first-time accounts are asked to submit a short use-case form. Do this once before the first deployment.
+- **Bedrock model access**: in the Bedrock console (region `eu-central-1`) open the **Playground**, select the model and send one test message. For Anthropic models (not Nova), first-time accounts are asked to submit a short use-case form. Do this once before the first deployment.
 
 ## Deploy with GitHub Actions (recommended)
 
@@ -68,7 +68,7 @@ Every push to `main` validates the templates and code, then deploys the stack an
    | Variable | `AWS_DEPLOY_ROLE_ARN` | the `DeployRoleArn` from step 1 |
    | Secret | `NOTIFICATION_EMAIL` | the address that receives the "CV processed" emails |
    | Variable (optional) | `AWS_REGION` | default `eu-central-1` |
-   | Variable (optional) | `BEDROCK_MODEL_ID` | default `eu.anthropic.claude-sonnet-5-5` |
+   | Variable (optional) | `BEDROCK_MODEL_ID` | default `eu.amazon.nova-2-lite-v1:0` |
    | Variable (optional) | `STACK_NAME` | default `cv-enhancer` (lowercase; must match `AppStackName` in step 1) |
 
 3. **Push to `main`** (or run **Actions → Deploy to AWS → Run workflow**). The first run takes about 5–8 minutes because of CloudFront. The website URL appears on the run's summary page.
@@ -85,7 +85,7 @@ Needs AWS CLI v2 configured with `aws configure`. Windows PowerShell, from this 
 ```powershell
 .\scripts\deploy.ps1 -NotificationEmail you@example.com
 # cheaper model:
-.\scripts\deploy.ps1 -NotificationEmail you@example.com -ModelId eu.anthropic.claude-haiku-5-5
+.\scripts\deploy.ps1 -NotificationEmail you@example.com -ModelId eu.anthropic.claude-sonnet-5-5
 ```
 
 Linux / macOS / Git Bash: `./scripts/deploy.sh you@example.com`

@@ -47,7 +47,7 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
       STACK_NAME: ${{ vars.STACK_NAME || 'cv-enhancer' }}
-      BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID || 'eu.anthropic.claude-sonnet-5-5' }}
+      BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID || 'eu.amazon.nova-2-lite-v1:0' }}
       NOTIFICATION_EMAIL: ${{ secrets.NOTIFICATION_EMAIL }}
     steps:
       - uses: actions/checkout@v4

@@ -6,7 +6,7 @@ set -euo pipefail
 EMAIL="${1:?Usage: deploy.sh <notification-email> [stack-name] [region] [model-id]}"
 STACK="${2:-cv-enhancer}"
 REGION="${3:-eu-central-1}"
-MODEL_ID="${4:-eu.anthropic.claude-sonnet-5-5}"
+MODEL_ID="${4:-eu.amazon.nova-2-lite-v1:0}"
 ALLOWED_ORIGIN="${ALLOWED_ORIGIN:-}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

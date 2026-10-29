@@ -13,11 +13,11 @@ Parameters:
 
   BedrockModelId:
     Type: String
-    Default: eu.anthropic.claude-sonnet-5-5
+    Default: eu.amazon.nova-2-lite-v1:0
     Description: >
       Bedrock model or inference profile ID. In eu-central-1 Anthropic models are only reachable through
       the eu.* (data stays in the EU) or global.* inference profiles.
-      Cheaper options - eu.anthropic.claude-haiku-5-5, eu.amazon.nova-2-lite-v1:0
+      Other options - eu.anthropic.claude-sonnet-5-5 (best writing quality), eu.anthropic.claude-haiku-5-5
 
   MaxOutputTokens:
     Type: Number
