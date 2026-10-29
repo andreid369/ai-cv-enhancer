@@ -59,8 +59,12 @@ Resources:
               StringLike:
                 # only the main branch / the "production" environment of this one repo
                 token.actions.githubusercontent.com:sub:
+                  # classic format
                   - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:production'
                   - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/main'
+                  # newer format: GitHub appends numeric IDs (owner@id/repo@id)
+                  - !Sub 'repo:${GitHubOwner}@*/${GitHubRepo}@*:environment:production'
+                  - !Sub 'repo:${GitHubOwner}@*/${GitHubRepo}@*:ref:refs/heads/main'
       Policies:
         - PolicyName: deploy-cv-enhancer
           PolicyDocument:
