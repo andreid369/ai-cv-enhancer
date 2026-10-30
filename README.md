@@ -265,5 +265,7 @@ and links back to this repository, and state the changes you made.
 
 Created by Andrei Don (AMD) - https://github.com/andreid369/ai-cv-enhancer
 
+Built with the help of [Claude Code](https://claude.com/claude-code) (Anthropic).
+
 The libraries in `frontend/vendor/` (pdf.js, mammoth, marked, DOMPurify) keep their own licenses, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 AWS architecture icons are used under the AWS Architecture Icons terms.
