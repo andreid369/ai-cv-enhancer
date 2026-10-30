@@ -6,7 +6,7 @@ Description: >
 Parameters:
   GitHubOwner:
     Type: String
-    Description: GitHub user or organisation that owns the repository (e.g. andrei-donz)
+    Description: GitHub user or organisation that owns the repository (e.g. andreid369)
   GitHubRepo:
     Type: String
     Description: Repository name (e.g. ai-cv-enhancer)
