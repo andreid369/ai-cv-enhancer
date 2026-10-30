@@ -256,3 +256,14 @@ infrastructure/github-oidc.yaml  One-time IAM role that GitHub Actions uses to d
 .github/workflows/destroy.yml  Manual: delete all AWS resources
 docs/architecture.png / .svg   Architecture diagram (official AWS icons)
 ```
+
+## License and credits
+
+Licensed under the [Apache License 2.0](LICENSE). You may use, modify and deploy this project, including commercially.
+If you redistribute it or a derivative, you must keep the [NOTICE](NOTICE) file, which credits the original author
+and links back to this repository, and state the changes you made.
+
+Created by Andrei Don (AMD) - https://github.com/andreid369/ai-cv-enhancer
+
+The libraries in `frontend/vendor/` (pdf.js, mammoth, marked, DOMPurify) keep their own licenses.
+AWS architecture icons are used under the AWS Architecture Icons terms.

@@ -17,11 +17,11 @@ concurrency:
 jobs:
   validate:
     name: Validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
@@ -39,7 +39,7 @@ jobs:
     name: Deploy
     needs: validate
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     permissions:
       id-token: write   # lets the job request a GitHub OIDC token to log in to AWS
@@ -50,7 +50,7 @@ jobs:
       BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID || 'eu.amazon.nova-2-lite-v1:0' }}
       NOTIFICATION_EMAIL: ${{ secrets.NOTIFICATION_EMAIL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Check settings
         run: |
@@ -64,7 +64,7 @@ jobs:
           fi
 
       - name: Log in to AWS (OIDC, no stored keys)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
