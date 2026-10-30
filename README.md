@@ -120,7 +120,7 @@ Invoke-RestMethod "$ApiUrl/cv/$($job.jobId)"   # repeat until status = completed
 | Messages in the dead-letter queue | Repeated Bedrock throttling – check quotas or switch to Haiku |
 | No email | SNS subscription not confirmed (check spam) |
 | CORS error in browser | You're testing locally – redeploy with `-AllowedOrigin "*"` |
-| "You have reached the limit of 2 CVs" | Expected after 2 uploads from your IP – run `scripts/reset-ip-limit.ps1` |
+| "You have reached the limit of 2 CVs" | Expected after 2 uploads from your IP – run `scripts/reset-ip-limit.ps1` (or `.sh` in WSL) |
 | Refreshing the result page shows nothing | Expected: the result is deleted after it's shown once |
 
 ## Security and privacy
@@ -141,6 +141,12 @@ Invoke-RestMethod "$ApiUrl/cv/$($job.jobId)"   # repeat until status = completed
 
 ```powershell
 .\scripts\reset-ip-limit.ps1
+```
+
+In WSL, Linux, macOS or Git Bash:
+
+```bash
+bash scripts/reset-ip-limit.sh
 ```
 
 ## Delete everything from AWS
@@ -165,12 +171,20 @@ CloudFormation can't delete an S3 bucket that still has files in it, so every op
 2. Type the stack name `cv-enhancer` in the confirmation box and click **Run workflow**. Any other text stops the workflow without deleting anything.
 3. Wait for the green tick. If you set a required reviewer on the `production` environment, approve the run first.
 
-**Option B – PowerShell from your computer** (needs the AWS CLI configured with `aws configure`)
+**Option B – script from your computer** (needs the AWS CLI configured with `aws configure`)
 
 ```powershell
 .\scripts\destroy.ps1
 # different stack name or region:
 .\scripts\destroy.ps1 -StackName cv-enhancer -Region eu-central-1
+```
+
+In WSL, Linux, macOS or Git Bash:
+
+```bash
+bash scripts/destroy.sh
+# different stack name or region:
+bash scripts/destroy.sh cv-enhancer eu-central-1
 ```
 
 **Option C – AWS console, by hand**
@@ -236,7 +250,7 @@ backend/processor/prompt.py    System prompt + user prompt
 backend/status/app.py          GET /cv/{jobId} (returns the result once, then deletes it)
 backend/cleanup/app.py         Deletes results 15 min after the email notification
 frontend/                      Static website (index.html, app.js, styles.css, vendor libs)
-scripts/                       deploy.ps1, deploy.sh, destroy.ps1, reset-ip-limit.ps1
+scripts/                       deploy.ps1/.sh, destroy.ps1/.sh, reset-ip-limit.ps1/.sh
 infrastructure/github-oidc.yaml  One-time IAM role that GitHub Actions uses to deploy
 .github/workflows/deploy.yml   Validate on every PR, deploy on push to main
 .github/workflows/destroy.yml  Manual: delete all AWS resources
